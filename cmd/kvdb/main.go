@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/olif/kvdb/pkg/kvdb"
-	"github.com/olif/kvdb/pkg/kvdb/inmemory"
+	"github.com/olif/kvdb/pkg/kvdb/aol"
 )
 
 const (
@@ -38,10 +38,14 @@ func main() {
 
 	logger := log.New(os.Stdout, "", log.LstdFlags)
 
-	db := inmemory.NewStore(inmemory.Config{
-		MaxRecordSize: defaultMaxRecordSize,
+	db, err := aol.NewStore(aol.Config{
+		BasePath:      basePath,
+		MaxRecordSize: &maxRecordSize,
 		Logger:        logger,
 	})
+	if err != nil {
+		logger.Fatal(err)
+	}
 
 	server := startHTTPServer(httpPort, logger, db)
 
