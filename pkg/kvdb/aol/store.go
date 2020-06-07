@@ -143,10 +143,10 @@ func (s *Store) append(record *record.Record) error {
 	}
 
 	if !s.async {
-		file.Sync()
+		return file.Sync()
 	}
 
-	return nil
+	return file.Close()
 }
 
 // Close closes the store
