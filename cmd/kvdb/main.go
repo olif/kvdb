@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/olif/kvdb/pkg/kvdb"
-	"github.com/olif/kvdb/pkg/kvdb/aol"
+	"github.com/olif/kvdb/pkg/kvdb/indexedaol"
 )
 
 const (
@@ -38,7 +38,7 @@ func main() {
 
 	logger := log.New(os.Stdout, "", log.LstdFlags)
 
-	db, err := aol.NewStore(aol.Config{
+	db, err := indexedaol.NewStore(indexedaol.Config{
 		BasePath:      basePath,
 		MaxRecordSize: &maxRecordSize,
 		Logger:        logger,

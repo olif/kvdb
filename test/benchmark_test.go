@@ -10,51 +10,102 @@ import (
 
 	"github.com/olif/kvdb/pkg/kvdb"
 	"github.com/olif/kvdb/pkg/kvdb/aol"
+	"github.com/olif/kvdb/pkg/kvdb/indexedaol"
+	"github.com/olif/kvdb/pkg/kvdb/inmemory"
 	"github.com/olif/kvdb/pkg/kvdb/record"
 )
 
-func BenchmarkRead100Db100(b *testing.B)    { Read(b, 100, 100, 100) }
-func BenchmarkRead1000Db100(b *testing.B)   { Read(b, 1000, 100, 100) }
-func BenchmarkRead10000Db100(b *testing.B)  { Read(b, 10000, 100, 100) }
-func BenchmarkRead100000Db100(b *testing.B) { Read(b, 100000, 100, 100) }
+const dbPathPattern = "./test"
 
-func BenchmarkWrite100Db100(b *testing.B)    { Write(b, 100, 100, 100, true) }
-func BenchmarkWrite1000Db100(b *testing.B)   { Write(b, 1000, 100, 100, true) }
-func BenchmarkWrite10000Db100(b *testing.B)  { Write(b, 10000, 100, 100, true) }
-func BenchmarkWrite100000Db100(b *testing.B) { Write(b, 100000, 100, 100, true) }
+var maxRecordSize int = 100000
 
-func BenchmarkWrite1000Async(b *testing.B) { Write(b, 0, 100, 1000, true) }
-func BenchmarkWrite1000Sync(b *testing.B)  { Write(b, 0, 100, 1000, false) }
-
-type TestCtx struct {
-	dbPath string
-	store  kvdb.Store
+func BenchmarkInMemoryRead10000Db100(b *testing.B) { Read(b, getInMemoryStore(b), 10000, 100, 100) }
+func BenchmarkAolRead10000Db100(b *testing.B)      { Read(b, getAolStore(b, true), 10000, 100, 100) }
+func BenchmarkIndexedAolRead10000Db100(b *testing.B) {
+	Read(b, getIndexedAolStore(b, true), 10000, 100, 100)
 }
 
-func Setup(b *testing.B, async bool) *TestCtx {
-	dbPath, err := ioutil.TempDir("./", "test")
+func BenchmarkInMemoryWrite10000Db100(b *testing.B) {
+	Write(b, getInMemoryStore(b), 0, 100, 10000)
+}
+func BenchmarkAolWrite10000Db100(b *testing.B) {
+	Write(b, getAolStore(b, false), 0, 100, 10000)
+}
+func BenchmarkIndexedAolWrite10000Db100(b *testing.B) {
+	Write(b, getIndexedAolStore(b, false), 0, 100, 10000)
+}
+
+// func BenchmarkRead100Db100(b *testing.B)    { Read(b, 100, 100, 100) }
+// func BenchmarkRead1000Db100(b *testing.B)   { Read(b, 1000, 100, 100) }
+// func BenchmarkRead10000Db100(b *testing.B)  { Read(b, 10000, 100, 100) }
+// func BenchmarkRead100000Db100(b *testing.B) { Read(b, 100000, 100, 100) }
+
+// func BenchmarkWrite100Db100(b *testing.B)    { Write(b, 100, 100, 100, true) }
+// func BenchmarkWrite1000Db100(b *testing.B)   { Write(b, 1000, 100, 100, true) }
+// func BenchmarkWrite10000Db100(b *testing.B)  { Write(b, 10000, 100, 100, true) }
+// func BenchmarkWrite100000Db100(b *testing.B) { Write(b, 100000, 100, 100, true) }
+
+// func BenchmarkWrite1000Async(b *testing.B) { Write(b, 0, 100, 1000, true) }
+// func BenchmarkWrite1000Sync(b *testing.B)  { Write(b, 0, 100, 1000, false) }
+
+func getInMemoryStore(b *testing.B) testCtx {
+	dbPath, err := ioutil.TempDir("./", dbPathPattern)
 	if err != nil {
 		b.Fatal(err)
 	}
 
-	maxRecordSize := 100000
-	config := aol.Config{
+	store := inmemory.NewStore(inmemory.Config{
+		MaxRecordSize: maxRecordSize,
+	})
+
+	return testCtx{dbPath, store}
+
+}
+
+func getAolStore(b *testing.B, async bool) testCtx {
+	dbPath, err := ioutil.TempDir("./", dbPathPattern)
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	store, err := aol.NewStore(aol.Config{
 		BasePath:      dbPath,
 		MaxRecordSize: &maxRecordSize,
 		Async:         &async,
-	}
-	store, err := aol.NewStore(config)
+	})
+
 	if err != nil {
-		panic(err)
+		b.Fatal(err)
 	}
 
-	return &TestCtx{
-		dbPath: dbPath,
-		store:  store,
-	}
+	return testCtx{dbPath, store}
 }
 
-func Teardown(ctx *TestCtx) {
+func getIndexedAolStore(b *testing.B, async bool) testCtx {
+	dbPath, err := ioutil.TempDir("./", dbPathPattern)
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	store, err := indexedaol.NewStore(indexedaol.Config{
+		BasePath:      dbPath,
+		MaxRecordSize: &maxRecordSize,
+		Async:         &async,
+	})
+
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	return testCtx{dbPath, store}
+}
+
+type testCtx struct {
+	dbPath string
+	store  kvdb.Store
+}
+
+func Teardown(ctx testCtx) {
 	os.RemoveAll(ctx.dbPath)
 }
 
@@ -74,8 +125,7 @@ func genKeyValues(size, n int) []keyVal {
 	return keyValues
 }
 
-func Write(b *testing.B, dbSize, valSize, n int, async bool) {
-	testCtx := Setup(b, async)
+func Write(b *testing.B, testCtx testCtx, dbSize, valSize, n int) {
 	defer Teardown(testCtx)
 
 	initData := genKeyValues(valSize, dbSize)
@@ -84,7 +134,7 @@ func Write(b *testing.B, dbSize, valSize, n int, async bool) {
 	testData := genKeyValues(valSize, n)
 	record := record.NewValue(testData[0].key, testData[0].value)
 	s := record.Size()
-	b.SetBytes(int64(s))
+	b.SetBytes(int64(n) * int64(s))
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
@@ -102,8 +152,7 @@ func write(b *testing.B, store kvdb.Store, testData []keyVal) {
 	}
 }
 
-func Read(b *testing.B, dbSize, valSize, n int) {
-	ctx := Setup(b, true)
+func Read(b *testing.B, ctx testCtx, dbSize, valSize, n int) {
 	defer Teardown(ctx)
 
 	testData := genKeyValues(valSize, dbSize)
