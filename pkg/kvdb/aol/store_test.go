@@ -1,6 +1,7 @@
 package aol
 
 import (
+	"io/ioutil"
 	"os"
 	"testing"
 
@@ -8,19 +9,15 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-const testPath = "./testdata/"
-
-func initPath() {
-	os.Mkdir(testPath, os.ModePerm)
-}
-
-func teardown() {
-	os.RemoveAll(testPath)
-}
-
 func TestSimpleSetGetDelete(t *testing.T) {
-	initPath()
-	defer teardown()
+	testPath, err := ioutil.TempDir("./", "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	defer (func() {
+		os.RemoveAll(testPath)
+	})()
 
 	const (
 		testKey   = "testkey"

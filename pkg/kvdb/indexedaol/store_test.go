@@ -1,6 +1,7 @@
 package indexedaol
 
 import (
+	"io/ioutil"
 	"os"
 	"testing"
 
@@ -10,17 +11,15 @@ import (
 
 const testPath = "./testdata/"
 
-func initPath() {
-	os.Mkdir(testPath, os.ModePerm)
-}
-
-func teardown() {
-	os.RemoveAll(testPath)
-}
-
 func TestSimpleSetGetDelete(t *testing.T) {
-	initPath()
-	defer teardown()
+	testPath, err := ioutil.TempDir("./", "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	defer (func() {
+		os.RemoveAll(testPath)
+	})()
 
 	const (
 		testKey   = "testkey"
@@ -48,8 +47,14 @@ func TestSimpleSetGetDelete(t *testing.T) {
 }
 
 func TestCanRebuildIndex(t *testing.T) {
-	initPath()
-	defer teardown()
+	testPath, err := ioutil.TempDir("./", "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	defer (func() {
+		os.RemoveAll(testPath)
+	})()
 
 	store, err := NewStore(Config{
 		BasePath: testPath,
