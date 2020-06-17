@@ -75,7 +75,7 @@ func startHTTPServer(port int, logger *log.Logger, db kvdb.Store) *http.Server {
 		case http.MethodGet:
 			val, err := db.Get(key)
 			if err != nil {
-				handleError(w, err)
+				handleError(w, r, logger, err)
 				return
 			}
 
@@ -84,12 +84,12 @@ func startHTTPServer(port int, logger *log.Logger, db kvdb.Store) *http.Server {
 		case http.MethodPut, http.MethodPost:
 			data, err := ioutil.ReadAll(r.Body)
 			if err != nil {
-				handleError(w, err)
+				handleError(w, r, logger, err)
 				return
 			}
 
 			if err := db.Put(key, data); err != nil {
-				handleError(w, err)
+				handleError(w, r, logger, err)
 				return
 			}
 
@@ -97,7 +97,7 @@ func startHTTPServer(port int, logger *log.Logger, db kvdb.Store) *http.Server {
 
 		case http.MethodDelete:
 			if err := db.Delete(key); err != nil {
-				handleError(w, err)
+				handleError(w, r, logger, err)
 				return
 			}
 
@@ -125,10 +125,14 @@ func stopHTTPServer(server *http.Server, logger *log.Logger) {
 	}
 }
 
-func handleError(w http.ResponseWriter, err error) {
+func handleError(w http.ResponseWriter, r *http.Request, logger *log.Logger, err error) {
 	if kvdb.IsNotFoundError(err) {
 		w.WriteHeader(http.StatusNotFound)
-	} else if err != nil {
+	} else if kvdb.IsBadRequestError(err) {
+		logger.Printf("%s %s failed: %s", r.Method, r.URL.Path, err)
+		w.WriteHeader(http.StatusBadRequest)
+	} else {
+		logger.Printf("%s %s failed: %s", r.Method, r.URL.Path, err)
 		w.WriteHeader(http.StatusInternalServerError)
 	}
 }
