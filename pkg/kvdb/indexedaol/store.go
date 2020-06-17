@@ -29,7 +29,8 @@ type Store struct {
 	logger        *log.Logger
 	async         bool
 
-	index *index
+	index      *index
+	writeMutex sync.Mutex
 }
 
 // Config contains the configuration properties for the simplelog store
@@ -47,7 +48,7 @@ type Config struct {
 type index struct {
 	mutex  sync.RWMutex
 	table  map[string]int64
-	endPos int64
+	cursor int64
 }
 
 func (i *index) get(key string) (int64, bool) {
@@ -57,10 +58,11 @@ func (i *index) get(key string) (int64, bool) {
 	return val, ok
 }
 
-func (i *index) put(key string, offset int64) {
+func (i *index) put(key string, written int64) {
 	i.mutex.Lock()
 	defer i.mutex.Unlock()
-	i.table[key] = offset
+	i.table[key] = i.cursor
+	i.cursor += written
 }
 
 // NewStore returns a new SimpleLogStore
@@ -95,7 +97,7 @@ func NewStore(config Config) (*Store, error) {
 		return nil, err
 	}
 
-	logger.Printf("Indexed rebuilt with %d records", len(idx.table))
+	logger.Printf("Index rebuilt with %d records", len(idx.table))
 
 	return &Store{
 		storagePath:   storagePath,
@@ -108,7 +110,7 @@ func NewStore(config Config) (*Store, error) {
 
 func buildIndex(filePath string, maxRecordSize int) (*index, error) {
 	idx := index{
-		endPos: 0,
+		cursor: 0,
 		table:  map[string]int64{},
 	}
 
@@ -118,7 +120,6 @@ func buildIndex(filePath string, maxRecordSize int) (*index, error) {
 		return nil, err
 	}
 
-	var offset int64
 	scanner, err := record.NewScanner(f, maxRecordSize)
 	if err != nil {
 		return nil, err
@@ -126,9 +127,7 @@ func buildIndex(filePath string, maxRecordSize int) (*index, error) {
 
 	for scanner.Scan() {
 		record := scanner.Record()
-
-		idx.table[record.Key()] = offset
-		offset += int64(record.Size())
+		idx.put(record.Key(), int64(record.Size()))
 	}
 
 	if scanner.Err() != nil {
@@ -193,6 +192,9 @@ func (store *Store) append(record *record.Record) error {
 		return kvdb.NewBadRequestError(msg)
 	}
 
+	store.writeMutex.Lock()
+	defer store.writeMutex.Unlock()
+
 	file, err := os.OpenFile(store.storagePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
 	defer file.Close()
 	if err != nil {
@@ -214,8 +216,7 @@ func (store *Store) append(record *record.Record) error {
 		return err
 	}
 
-	store.index.put(record.Key(), store.index.endPos)
-	store.index.endPos += int64(n)
+	store.index.put(record.Key(), int64(n))
 	return nil
 }
 
