@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"io/ioutil"
+	"math/rand"
 	"os"
 	"strings"
 	"testing"
@@ -19,34 +20,51 @@ const dbPathPattern = "./test"
 
 var maxRecordSize int = 100000
 
-func BenchmarkInMemoryRead10000Db100(b *testing.B) { Read(b, getInMemoryStore(b), 10000, 100, 100) }
-func BenchmarkAolRead10000Db100(b *testing.B)      { Read(b, getAolStore(b, true), 10000, 100, 100) }
+// Aol
+func BenchmarkAolReadFrom10Db(b *testing.B) {
+	Read(b, getAolStore(b, true), 10, 100, 1)
+}
+func BenchmarkAolReadFrom100Db(b *testing.B) {
+	Read(b, getAolStore(b, true), 100, 100, 1)
+}
+func BenchmarkAolReadFrom1000Db(b *testing.B) {
+	Read(b, getAolStore(b, true), 1000, 100, 1)
+}
+func BenchmarkAolReadFrom10000Db(b *testing.B) {
+	Read(b, getAolStore(b, true), 10000, 100, 1)
+}
+func BenchmarkAolRead10000Db100(b *testing.B) {
+	Read(b, getAolStore(b, true), 10000, 100, 1)
+}
+func BenchmarkAolWrite100Db100(b *testing.B) {
+	Write(b, getAolStore(b, true), 0, 100, 1)
+}
+func BenchmarkAolWrite1000Db100(b *testing.B) {
+	Write(b, getAolStore(b, true), 0, 1000, 1)
+}
+
+// Indexed aol
+func BenchmarkIndexedAolReadFrom10Db(b *testing.B) {
+	Read(b, getIndexedAolStore(b, true), 10, 100, 1)
+}
+func BenchmarkIndexedAolReadFrom100Db(b *testing.B) {
+	Read(b, getIndexedAolStore(b, true), 100, 100, 1)
+}
+func BenchmarkIndexedAolReadFrom1000Db(b *testing.B) {
+	Read(b, getIndexedAolStore(b, true), 1000, 100, 1)
+}
+func BenchmarkIndexedAolReadFrom10000Db(b *testing.B) {
+	Read(b, getIndexedAolStore(b, true), 10000, 100, 1)
+}
 func BenchmarkIndexedAolRead10000Db100(b *testing.B) {
-	Read(b, getIndexedAolStore(b, true), 10000, 100, 100)
+	Read(b, getIndexedAolStore(b, true), 10000, 100, 1)
 }
-
-func BenchmarkInMemoryWrite10000Db100(b *testing.B) {
-	Write(b, getInMemoryStore(b), 0, 100, 10000)
+func BenchmarkIndexedAolWrite100Db100(b *testing.B) {
+	Write(b, getIndexedAolStore(b, true), 0, 100, 1)
 }
-func BenchmarkAolWrite10000Db100(b *testing.B) {
-	Write(b, getAolStore(b, false), 0, 100, 10000)
+func BenchmarkIndexedAolWrite1000Db100(b *testing.B) {
+	Write(b, getIndexedAolStore(b, true), 0, 1000, 1)
 }
-func BenchmarkIndexedAolWrite10000Db100(b *testing.B) {
-	Write(b, getIndexedAolStore(b, false), 0, 100, 10000)
-}
-
-// func BenchmarkRead100Db100(b *testing.B)    { Read(b, 100, 100, 100) }
-// func BenchmarkRead1000Db100(b *testing.B)   { Read(b, 1000, 100, 100) }
-// func BenchmarkRead10000Db100(b *testing.B)  { Read(b, 10000, 100, 100) }
-// func BenchmarkRead100000Db100(b *testing.B) { Read(b, 100000, 100, 100) }
-
-// func BenchmarkWrite100Db100(b *testing.B)    { Write(b, 100, 100, 100, true) }
-// func BenchmarkWrite1000Db100(b *testing.B)   { Write(b, 1000, 100, 100, true) }
-// func BenchmarkWrite10000Db100(b *testing.B)  { Write(b, 10000, 100, 100, true) }
-// func BenchmarkWrite100000Db100(b *testing.B) { Write(b, 100000, 100, 100, true) }
-
-// func BenchmarkWrite1000Async(b *testing.B) { Write(b, 0, 100, 1000, true) }
-// func BenchmarkWrite1000Sync(b *testing.B)  { Write(b, 0, 100, 1000, false) }
 
 func getInMemoryStore(b *testing.B) testCtx {
 	dbPath, err := ioutil.TempDir("./", dbPathPattern)
@@ -157,6 +175,14 @@ func Read(b *testing.B, ctx testCtx, dbSize, valSize, n int) {
 
 	testData := genKeyValues(valSize, dbSize)
 	write(b, ctx.store, testData)
+	file, err := os.Open(ctx.dbPath)
+	if err != nil {
+		b.Fatal(err)
+	}
+	err = file.Sync()
+	if err != nil {
+		b.Fatal(err)
+	}
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
@@ -168,7 +194,8 @@ func Read(b *testing.B, ctx testCtx, dbSize, valSize, n int) {
 
 func read(b *testing.B, store kvdb.Store, testData []keyVal, n int) {
 	for i := 0; i < n; i++ {
-		expected := testData[i%len(testData)]
+		expected := testData[rand.Intn(len(testData))]
+		// expected := testData[i%len(testData)]
 		v, err := store.Get(expected.key)
 		if err != nil {
 			b.Fatal(err)
@@ -177,36 +204,5 @@ func read(b *testing.B, store kvdb.Store, testData []keyVal, n int) {
 			b.Fatal("actual value is different from expected")
 		}
 
-	}
-}
-
-func BenchmarkWriteAsync(b *testing.B) { write1Kb(b, false) }
-func BenchmarkWriteSync(b *testing.B)  { write1Kb(b, true) }
-
-func write1Kb(b *testing.B, sync bool) {
-	data := []byte(strings.Repeat("a", 1024))
-	dbPath, err := ioutil.TempDir("./", "test")
-	defer os.RemoveAll(dbPath)
-	if err != nil {
-		b.Fatal(err)
-	}
-
-	filePath := fmt.Sprintf("%s/%s", dbPath, "test.db")
-	file, err := os.OpenFile(filePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
-	defer file.Close()
-	if err != nil {
-		b.Fatal(err)
-	}
-
-	b.SetBytes(int64(len(data)))
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		_, err := file.Write(data)
-		if err != nil {
-			b.Fatal(err)
-		}
-		if sync {
-			file.Sync()
-		}
 	}
 }
