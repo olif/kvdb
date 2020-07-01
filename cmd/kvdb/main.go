@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/olif/kvdb/pkg/kvdb"
-	"github.com/olif/kvdb/pkg/kvdb/indexedaol"
+	"github.com/olif/kvdb/pkg/kvdb/compactedaol"
 )
 
 const (
@@ -38,10 +38,14 @@ func main() {
 
 	logger := log.New(os.Stdout, "", log.LstdFlags)
 
-	db, err := indexedaol.NewStore(indexedaol.Config{
-		BasePath:      basePath,
-		MaxRecordSize: &maxRecordSize,
-		Logger:        logger,
+	async := true
+	maxSegmentSize := 10 * 1024
+	db, err := compactedaol.NewStore(compactedaol.Config{
+		BasePath:       basePath,
+		MaxRecordSize:  &maxRecordSize,
+		Logger:         logger,
+		Async:          &async,
+		MaxSegmentSize: &maxSegmentSize,
 	})
 	if err != nil {
 		logger.Fatal(err)

@@ -49,3 +49,37 @@ func (r *Scanner) Record() *Record {
 	record, _ := FromBytes(data)
 	return record
 }
+
+type scannerCursor struct {
+	record  *Record
+	scanner *Scanner
+}
+
+func newScannerCursor(scanner *Scanner) *scannerCursor {
+	return &scannerCursor{
+		record:  nil,
+		scanner: scanner,
+	}
+}
+
+func (s *scannerCursor) key() *string {
+	if s.record == nil {
+		return nil
+	}
+
+	key := s.record.Key()
+	return &key
+}
+
+func (s *scannerCursor) next() {
+	if s != nil {
+		s.scanner.Scan()
+		s.record = s.scanner.Record()
+	}
+}
+
+func (s *scannerCursor) write(w io.Writer) {
+	if s.record != nil {
+		s.record.Write(w)
+	}
+}

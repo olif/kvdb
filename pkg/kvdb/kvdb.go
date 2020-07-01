@@ -5,11 +5,6 @@ import (
 	"fmt"
 )
 
-var (
-	notFoundError   *NotFoundError
-	badRequestError *BadRequestError
-)
-
 // Store defines the kvdb public interface
 type Store interface {
 	// Get returns the value for the given key or any error encountered. If the
@@ -60,11 +55,13 @@ func (b *BadRequestError) Error() string {
 // IsNotFoundError returns true if the error, or any of the wrapped errors
 // is of type BadRequestError
 func IsNotFoundError(err error) bool {
+	var notFoundError *NotFoundError
 	return errors.As(err, &notFoundError)
 }
 
 // IsBadRequestError returns true if the error, or any of the wrapped errors
 // is of type BadRequestError
 func IsBadRequestError(err error) bool {
+	var badRequestError *BadRequestError
 	return errors.As(err, &badRequestError)
 }
