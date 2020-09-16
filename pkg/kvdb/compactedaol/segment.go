@@ -22,7 +22,7 @@ type segment struct {
 	suffix        string
 
 	index      *index
-	writeMutex *sync.Mutex
+	writeMutex sync.Mutex
 }
 
 type index struct {
@@ -32,11 +32,11 @@ type index struct {
 }
 
 // not safe for concurrent use, must be handled by consumer
-func newSegment(baseDir string, maxRecordSize int, async bool, logger *log.Logger) segment {
+func newSegment(baseDir string, maxRecordSize int, async bool, logger *log.Logger) *segment {
 	filename := genFileName(openSegmentSuffix)
 	filePath := path.Join(baseDir, filename)
 
-	return segment{
+	return &segment{
 		storagePath: filePath,
 		logger:      logger,
 		async:       async,
@@ -47,7 +47,7 @@ func newSegment(baseDir string, maxRecordSize int, async bool, logger *log.Logge
 	}
 }
 
-func fromFile(filePath string, maxRecordSize int, async bool, logger *log.Logger) (segment, error) {
+func fromFile(filePath string, maxRecordSize int, async bool, logger *log.Logger) (*segment, error) {
 	idx := index{
 		cursor: 0,
 		table:  map[string]int64{},
@@ -56,12 +56,12 @@ func fromFile(filePath string, maxRecordSize int, async bool, logger *log.Logger
 	f, err := os.OpenFile(filePath, os.O_RDONLY|os.O_CREATE, 0600)
 	defer f.Close()
 	if err != nil {
-		return segment{}, err
+		return nil, err
 	}
 
 	scanner, err := record.NewScanner(f, maxRecordSize)
 	if err != nil {
-		return segment{}, err
+		return nil, err
 	}
 
 	for scanner.Scan() {
@@ -70,13 +70,13 @@ func fromFile(filePath string, maxRecordSize int, async bool, logger *log.Logger
 	}
 
 	if scanner.Err() != nil {
-		return segment{}, fmt.Errorf("could not scan entry, %w", err)
+		return nil, fmt.Errorf("could not scan entry, %w", err)
 	}
 
-	return segment{
+	return &segment{
 		storagePath: filePath,
 		index:       &idx,
-		writeMutex:  &sync.Mutex{},
+		writeMutex:  sync.Mutex{},
 	}, nil
 }
 
@@ -98,13 +98,13 @@ func (i *index) put(key string, written int64) {
 	i.cursor += written
 }
 
-func (segment segment) get(key string) ([]byte, error) {
-	offset, ok := segment.index.get(key)
+func (s *segment) get(key string) ([]byte, error) {
+	offset, ok := s.index.get(key)
 	if !ok {
 		return nil, kvdb.NewNotFoundError(key)
 	}
 
-	f, err := os.OpenFile(segment.storagePath, os.O_CREATE|os.O_RDONLY, 0600)
+	f, err := os.OpenFile(s.storagePath, os.O_CREATE|os.O_RDONLY, 0600)
 	defer f.Close()
 	if err != nil {
 		return nil, err
@@ -115,7 +115,7 @@ func (segment segment) get(key string) ([]byte, error) {
 		return nil, err
 	}
 
-	scanner, err := record.NewScanner(f, segment.maxRecordSize)
+	scanner, err := record.NewScanner(f, s.maxRecordSize)
 	if err != nil {
 		return nil, err
 	}
@@ -133,19 +133,19 @@ func (segment segment) get(key string) ([]byte, error) {
 	return nil, kvdb.NewNotFoundError(key)
 }
 
-func (segment segment) append(record *record.Record) error {
-	file, err := os.OpenFile(segment.storagePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
+func (s *segment) append(record *record.Record) error {
+	file, err := os.OpenFile(s.storagePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
 	defer file.Close()
 	if err != nil {
-		return fmt.Errorf("could not open file: %s for write, %w", segment.storagePath, err)
+		return fmt.Errorf("could not open file: %s for write, %w", s.storagePath, err)
 	}
 
 	n, err := record.Write(file)
 	if err != nil {
-		return fmt.Errorf("could not write record to file: %s, %w", segment.storagePath, err)
+		return fmt.Errorf("could not write record to file: %s, %w", s.storagePath, err)
 	}
 
-	if !segment.async {
+	if !s.async {
 		if err := file.Sync(); err != nil {
 			return err
 		}
@@ -155,28 +155,25 @@ func (segment segment) append(record *record.Record) error {
 		return err
 	}
 
-	segment.index.put(record.Key(), int64(n))
+	s.index.put(record.Key(), int64(n))
 	return nil
 }
 
-func (s segment) changeSuffix(oldSuffix, newSuffix string) (segment, error) {
+func (s *segment) changeSuffix(oldSuffix, newSuffix string) error {
 	newFilePath := strings.Replace(s.storagePath, oldSuffix, newSuffix, 1)
 
 	if err := os.Rename(s.storagePath, newFilePath); err != nil {
-		return segment{}, err
+		return err
 	}
 
-	return segment{
-		storagePath: newFilePath,
-		logger:      s.logger,
-		async:       s.async,
-		index: &index{
-			cursor: 0,
-			table:  map[string]int64{},
-		},
-	}, nil
+	s.storagePath = newFilePath
+	return nil
 }
 
-func (segment segment) size() int64 {
-	return segment.index.cursor
+func (s *segment) size() int64 {
+	return s.index.cursor
+}
+
+func (s *segment) clearFile() error {
+	return os.Remove(s.storagePath)
 }

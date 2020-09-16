@@ -11,6 +11,7 @@ import (
 
 	"github.com/olif/kvdb/pkg/kvdb"
 	"github.com/olif/kvdb/pkg/kvdb/aol"
+	"github.com/olif/kvdb/pkg/kvdb/compactedaol"
 	"github.com/olif/kvdb/pkg/kvdb/indexedaol"
 	"github.com/olif/kvdb/pkg/kvdb/inmemory"
 	"github.com/olif/kvdb/pkg/kvdb/record"
@@ -66,6 +67,29 @@ func BenchmarkIndexedAolWrite1000Db100(b *testing.B) {
 	Write(b, getIndexedAolStore(b, true), 0, 1000, 1)
 }
 
+// Compacted aol
+func BenchmarkCompactedAolReadFrom10Db(b *testing.B) {
+	Read(b, getCompactedAolStore(b, true), 10, 100, 1)
+}
+func BenchmarkCompactedAolReadFrom100Db(b *testing.B) {
+	Read(b, getCompactedAolStore(b, true), 100, 100, 1)
+}
+func BenchmarkCompactedAolReadFrom1000Db(b *testing.B) {
+	Read(b, getCompactedAolStore(b, true), 1000, 100, 1)
+}
+func BenchmarkCompactedAolReadFrom10000Db(b *testing.B) {
+	Read(b, getCompactedAolStore(b, true), 10000, 100, 1)
+}
+func BenchmarkCompactedAolRead10000Db100(b *testing.B) {
+	Read(b, getCompactedAolStore(b, true), 10000, 100, 1)
+}
+func BenchmarkCompactedAolWrite100Db100(b *testing.B) {
+	Write(b, getCompactedAolStore(b, true), 0, 100, 1)
+}
+func BenchmarkCompactedAolWrite1000Db100(b *testing.B) {
+	Write(b, getCompactedAolStore(b, true), 0, 1000, 1)
+}
+
 func getInMemoryStore(b *testing.B) testCtx {
 	dbPath, err := ioutil.TempDir("./", dbPathPattern)
 	if err != nil {
@@ -78,6 +102,27 @@ func getInMemoryStore(b *testing.B) testCtx {
 
 	return testCtx{dbPath, store}
 
+}
+
+func getCompactedAolStore(b *testing.B, async bool) testCtx {
+	dbPath, err := ioutil.TempDir("./", dbPathPattern)
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	maxSegmentSize := 1024 * 200 //200kB
+	store, err := compactedaol.NewStore(compactedaol.Config{
+		BasePath:       dbPath,
+		MaxRecordSize:  &maxRecordSize,
+		MaxSegmentSize: &maxSegmentSize,
+		Async:          &async,
+	})
+
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	return testCtx{dbPath, store}
 }
 
 func getAolStore(b *testing.B, async bool) testCtx {
@@ -124,7 +169,7 @@ type testCtx struct {
 }
 
 func Teardown(ctx testCtx) {
-	os.RemoveAll(ctx.dbPath)
+	// os.RemoveAll(ctx.dbPath)
 }
 
 type keyVal struct {
@@ -195,7 +240,6 @@ func Read(b *testing.B, ctx testCtx, dbSize, valSize, n int) {
 func read(b *testing.B, store kvdb.Store, testData []keyVal, n int) {
 	for i := 0; i < n; i++ {
 		expected := testData[rand.Intn(len(testData))]
-		// expected := testData[i%len(testData)]
 		v, err := store.Get(expected.key)
 		if err != nil {
 			b.Fatal(err)
