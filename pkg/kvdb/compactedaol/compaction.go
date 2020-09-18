@@ -40,13 +40,12 @@ func newCompacter(
 	}
 }
 
-func (c *compacter) run() {
+func (c *compacter) run(interval time.Duration) {
 	go (func() {
-		for range time.Tick(10 * time.Second) {
+		for range time.Tick(interval) {
 			go func() {
 				if c.semaphore.TryAcquire(1) {
 					defer c.semaphore.Release(1)
-
 					c.logger.Println("compaction: running compaction")
 
 					filesToCompact := c.selectFilesForCompaction()
@@ -56,85 +55,89 @@ func (c *compacter) run() {
 					}
 
 					targetFile := strings.ReplaceAll(filesToCompact[0], closedSegmentSuffix, compactionSuffix)
-					err := c.doCompaction(targetFile, filesToCompact)
-					if err != nil {
-						c.logger.Printf("could not run compaction: %s", err)
+					if err := c.doCompaction(targetFile, filesToCompact); err != nil {
+						c.logger.Printf("compaction: could not run compaction: %s", err)
 						return
 					}
 
-					c.onCompactionDone(targetFile, filesToCompact)
+					if err := c.onCompactionDone(targetFile, filesToCompact); err != nil {
+						c.logger.Printf("compaction: could not run onCompactionDone: %s", err)
+					}
 				}
 			}()
 		}
 	})()
 }
 
-// finds n consecutive segments where filesize is lower than the
-// closedSegmentMaxSize
+// selectFilesForCompaction tries to select as many consecutive files as
+// possible without exceeding the CompactionThreshold.
 func (c *compacter) selectFilesForCompaction() []string {
-	filesToCompact := []string{}
 	files, _ := listFilesWithSuffix(c.storagePath, closedSegmentSuffix, false)
 
-	counter := 0
+	fileGroup := []string{}
+	var groupSize int64 = 0
 	for i := range files {
-		if files[i].info.Size() < int64(c.compactionThreshold) {
-			counter++
-			filesToCompact = append(filesToCompact, files[i].filepath)
+		fs := files[i].info
+		if groupSize+fs.Size() < int64(c.compactionThreshold) {
+			groupSize += fs.Size()
+			fileGroup = append(fileGroup, files[i].filepath)
 		} else {
-			counter = 0
-			filesToCompact = []string{}
+			if len(fileGroup) > 1 {
+				break
+			} else {
+				fileGroup = []string{files[i].filepath}
+				groupSize = fs.Size()
+			}
 		}
 	}
 
-	if counter >= 2 {
-		sort.Sort(sort.Reverse(sort.StringSlice(filesToCompact)))
-		return filesToCompact
+	if len(fileGroup) >= 2 {
+		sort.Sort(sort.Reverse(sort.StringSlice(fileGroup)))
+		return fileGroup
 	}
 
 	return nil
 }
 
-func (c *compacter) doCompaction(targetFile string, filesToCompact []string) error {
-	var sources = []*record.Scanner{}
+func (c *compacter) doCompaction(target string, sources []string) error {
+	var sourceScanners = []*record.Scanner{}
 
-	// create scanners for the files to compact
-	for _, source := range filesToCompact {
+	for _, source := range sources {
 		file, err := os.Open(source)
-
 		if err != nil {
 			return fmt.Errorf("could not open file for compaction: %w", err)
 		}
-
-		defer func() {
-			file.Close()
-		}()
+		defer file.Close()
 
 		scanner, err := record.NewScanner(file, c.maxRecordSize)
 		if err != nil {
 			return err
 		}
 
-		sources = append(sources, scanner)
+		sourceScanners = append([]*record.Scanner{scanner}, sourceScanners...)
 	}
 
-	data := map[string][]byte{}
-	for _, source := range sources {
+	data := map[string]*record.Record{}
+	for _, source := range sourceScanners {
 		for source.Scan() {
-			record := source.Record()
-			data[record.Key()] = record.Value()
+			if source.Err() != nil {
+				c.logger.Fatalf("compacter: skipping corrupted record for key: %s\n", source.Record().Key())
+			} else {
+				record := source.Record()
+				data[record.Key()] = record
+			}
 		}
 	}
 
-	c.logger.Printf("compacter: creating new segment: %s\n", targetFile)
-	target, err := os.OpenFile(targetFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
+	c.logger.Printf("compacter: creating new segment: %s\n", target)
+	targetFile, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
 	if err != nil {
 		return fmt.Errorf("could not create compaction target: %w", err)
 	}
-	defer target.Close()
+	defer targetFile.Close()
 
-	for key, val := range data {
-		r := record.NewValue(key, val)
-		_, err := r.Write(target)
+	for _, record := range data {
+		_, err := record.Write(targetFile)
 		if err != nil {
 			return fmt.Errorf("compacter: could not write to target: %w", err)
 		}

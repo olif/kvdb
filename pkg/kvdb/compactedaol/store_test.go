@@ -125,37 +125,37 @@ func TestCanRebuildIndex(t *testing.T) {
 	require.Equal(t, "value3", string(val3))
 }
 
-func TestCanPruneSegments(t *testing.T) {
-	s1 := segment{storagePath: "s1.cseg"}
-	s2 := segment{storagePath: "s2.cseg"}
-	s3 := segment{storagePath: "s3.cseg"}
-	s4 := segment{storagePath: "s4.cseg"}
-	s5 := segment{storagePath: "new.cseg"}
+// func TestCanPruneSegments(t *testing.T) {
+// 	s1 := segment{storagePath: "s1.cseg"}
+// 	s2 := segment{storagePath: "s2.cseg"}
+// 	s3 := segment{storagePath: "s3.cseg"}
+// 	s4 := segment{storagePath: "s4.cseg"}
+// 	s5 := segment{storagePath: "new.cseg"}
 
-	allSegments := []*segment{&s4, &s3, &s2, &s1}
+// 	allSegments := []*segment{&s4, &s3, &s2, &s1}
 
-	// Remove all
-	toRemove := []string{"s4.cseg", "s3.cseg", "s2.cseg", "s1.cseg"}
-	result, err := pruneSegments(allSegments, &s5, toRemove...)
-	require.NoError(t, err)
-	require.Len(t, result, 1)
+// 	// Remove all
+// 	toRemove := []string{"s4.cseg", "s3.cseg", "s2.cseg", "s1.cseg"}
+// 	result, err := pruneSegments(allSegments, &s5, toRemove...)
+// 	require.NoError(t, err)
+// 	require.Len(t, result, 1)
 
-	// Remove one
-	toRemove = []string{"s3.cseg"}
-	result, err = pruneSegments(allSegments, &s5, toRemove...)
-	require.Len(t, result, 4)
-	require.Equal(t, "new.cseg", result[1].storagePath)
+// 	// Remove one
+// 	toRemove = []string{"s3.cseg"}
+// 	result, err = pruneSegments(allSegments, &s5, toRemove...)
+// 	require.Len(t, result, 4)
+// 	require.Equal(t, "new.cseg", result[1].storagePath)
 
-	// Remove two
-	toRemove = []string{s3.storagePath, s2.storagePath}
-	result, err = pruneSegments(allSegments, &s5, toRemove...)
-	require.Len(t, result, 3)
-	require.Equal(t, "s4.cseg", result[0].storagePath)
-	require.Equal(t, "new.cseg", result[1].storagePath)
-	require.Equal(t, "s1.cseg", result[2].storagePath)
+// 	// Remove two
+// 	toRemove = []string{s3.storagePath, s2.storagePath}
+// 	result, err = pruneSegments(allSegments, &s5, toRemove...)
+// 	require.Len(t, result, 3)
+// 	require.Equal(t, "s4.cseg", result[0].storagePath)
+// 	require.Equal(t, "new.cseg", result[1].storagePath)
+// 	require.Equal(t, "s1.cseg", result[2].storagePath)
 
-	// Remove none
-	toRemove = []string{}
-	result, err = pruneSegments(allSegments, &s5, toRemove...)
-	require.Error(t, err)
-}
+// 	// Remove none
+// 	toRemove = []string{}
+// 	result, err = pruneSegments(allSegments, &s5, toRemove...)
+// 	require.Error(t, err)
+// }
