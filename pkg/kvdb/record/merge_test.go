@@ -15,7 +15,7 @@ func TestMerge(t *testing.T) {
 
 	record1 := NewValue("key2", []byte("record1"))
 	record12 := NewValue("key12", []byte("record1"))
-	record13 := NewValue("key13", []byte("record1"))
+	record13 := NewValue("key1", []byte("record1"))
 	record1.Write(f1)
 	record12.Write(f1)
 	record13.Write(f1)
@@ -23,7 +23,7 @@ func TestMerge(t *testing.T) {
 	record2 := NewValue("key2", []byte("record2"))
 	record2.Write(f2)
 
-	record3 := NewValue("key2", []byte("record3"))
+	record3 := NewValue("key1", []byte("record3"))
 	record3.Write(f3)
 
 	Merge(target, 4096, f1, f2, f3)

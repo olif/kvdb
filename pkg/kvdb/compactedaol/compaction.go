@@ -2,98 +2,103 @@ package compactedaol
 
 import (
 	"fmt"
-	"io"
 	"log"
 	"os"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/olif/kvdb/pkg/kvdb/record"
 	"golang.org/x/sync/semaphore"
 )
 
-type onCompactionDoneFunc func(targetFilePath string, compactedFilePaths ...string) error
+type onCompactionDoneFunc func(targetFile string, compactedFiles []string) error
 
-type NrOfFilesCompacter struct {
-	basepath          string
-	inFlightSemaphore *semaphore.Weighted
-	logger            *log.Logger
-
-	fileSuffix       string
-	maxSegmentsFiles int
-	maxRecordSize    int
-
-	// onCompactionDone is called when compaction process is finished. It is called
-	// with the name of the new sstable together with the files that was compacted.
-	// The elements in compactedFilePaths are sorted ascending in the priority order
-	// used during the merge process.
-	onCompactionDone onCompactionDoneFunc
+type compacter struct {
+	onCompactionDone    onCompactionDoneFunc
+	compactionThreshold int
+	storagePath         string
+	maxRecordSize       int
+	semaphore           *semaphore.Weighted
+	logger              *log.Logger
 }
 
-func NewNrOfFilesCompacter(
-	basePath string,
-	fileSuffix string,
-	logger *log.Logger,
-	maxSegments int,
+func newCompacter(
+	onCompactionDone onCompactionDoneFunc,
+	compactionThreshold int,
+	storagePath string,
 	maxRecordSize int,
-	onCompactionDone onCompactionDoneFunc) *NrOfFilesCompacter {
+	logger *log.Logger) *compacter {
 
-	c := NrOfFilesCompacter{
-		basepath:          basePath,
-		inFlightSemaphore: semaphore.NewWeighted(1),
-		logger:            logger,
-		fileSuffix:        fileSuffix,
-		maxSegmentsFiles:  maxSegments,
-		maxRecordSize:     maxRecordSize,
-		onCompactionDone:  onCompactionDone,
+	return &compacter{
+		onCompactionDone:    onCompactionDone,
+		compactionThreshold: compactionThreshold,
+		storagePath:         storagePath,
+		maxRecordSize:       maxRecordSize,
+		semaphore:           semaphore.NewWeighted(1),
+		logger:              logger,
 	}
+}
 
+func (c *compacter) run() {
 	go (func() {
-		for range time.Tick(1 * time.Second) {
-			files, err := listFilesWithSuffix(basePath, fileSuffix, false)
-			if err != nil {
-				logger.Fatalf("could not list files: %s", err)
-			} else if len(files) > maxSegments {
-				if !c.inFlightSemaphore.TryAcquire(1) {
-					c.doCompaction()
-					defer c.inFlightSemaphore.Release(1)
+		for range time.Tick(10 * time.Second) {
+			go func() {
+				if c.semaphore.TryAcquire(1) {
+					defer c.semaphore.Release(1)
+
+					c.logger.Println("compaction: running compaction")
+
+					filesToCompact := c.selectFilesForCompaction()
+					if filesToCompact == nil || len(filesToCompact) == 0 {
+						c.logger.Println("compaction: no files to compact")
+						return
+					}
+
+					targetFile := strings.ReplaceAll(filesToCompact[0], closedSegmentSuffix, compactionSuffix)
+					err := c.doCompaction(targetFile, filesToCompact)
+					if err != nil {
+						c.logger.Printf("could not run compaction: %s", err)
+						return
+					}
+
+					c.onCompactionDone(targetFile, filesToCompact)
 				}
-			}
+			}()
 		}
 	})()
-
-	return &c
 }
 
-func (c *NrOfFilesCompacter) doCompaction() {
-	c.logger.Println("running compaction...")
-	files, err := c.findFilesToCompact()
-	if err != nil {
-		c.logger.Fatalf("could not find files to compact: %s", err)
+// finds n consecutive segments where filesize is lower than the
+// closedSegmentMaxSize
+func (c *compacter) selectFilesForCompaction() []string {
+	filesToCompact := []string{}
+	files, _ := listFilesWithSuffix(c.storagePath, closedSegmentSuffix, false)
+
+	counter := 0
+	for i := range files {
+		if files[i].info.Size() < int64(c.compactionThreshold) {
+			counter++
+			filesToCompact = append(filesToCompact, files[i].filepath)
+		} else {
+			counter = 0
+			filesToCompact = []string{}
+		}
 	}
 
-	if len(files) < 2 {
-		return
+	if counter >= 2 {
+		sort.Sort(sort.Reverse(sort.StringSlice(filesToCompact)))
+		return filesToCompact
 	}
 
-	file1, file2 := files[0], files[1]
-	targetPath := changeSuffix(file2, c.fileSuffix, ".tmp")
-
-	if err = mergeRecords(c.maxRecordSize, targetPath, file2, file1); err != nil {
-		c.logger.Fatal("could not execute compaction, %w", err)
-	}
-
-	if err = c.onCompactionDone(targetPath, file2, file1); err != nil {
-		c.logger.Fatal(err)
-	}
+	return nil
 }
 
-// doCompaction takes a set of consecutive segments from the closedSegmentStack
-// and performs a compaction.
-func mergeRecords(maxRecordSize int, targetFile string, sourceFiles ...string) error {
-	// s.logger.Printf("compacting: %d segments", len(sourceFiles))
-	var sources = []io.Reader{}
+func (c *compacter) doCompaction(targetFile string, filesToCompact []string) error {
+	var sources = []*record.Scanner{}
 
-	for _, source := range sourceFiles {
+	// create scanners for the files to compact
+	for _, source := range filesToCompact {
 		file, err := os.Open(source)
 
 		if err != nil {
@@ -104,54 +109,36 @@ func mergeRecords(maxRecordSize int, targetFile string, sourceFiles ...string) e
 			file.Close()
 		}()
 
-		sources = append(sources, file)
+		scanner, err := record.NewScanner(file, c.maxRecordSize)
+		if err != nil {
+			return err
+		}
+
+		sources = append(sources, scanner)
 	}
 
+	data := map[string][]byte{}
+	for _, source := range sources {
+		for source.Scan() {
+			record := source.Record()
+			data[record.Key()] = record.Value()
+		}
+	}
+
+	c.logger.Printf("compacter: creating new segment: %s\n", targetFile)
 	target, err := os.OpenFile(targetFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
 	if err != nil {
 		return fmt.Errorf("could not create compaction target: %w", err)
 	}
 	defer target.Close()
 
-	return record.Merge(target, maxRecordSize, sources...)
-
-	// compactedSegment, err := fromFile(targetFile, s.maxRecordSize, s.async, s.logger)
-	// if err != nil {
-	// 	return fmt.Errorf("could not create segment of compaction target: %w", err)
-	// }
-
-	// resultingSegments, err := pruneSegments(s.closedSegmentStack, segments, compactedSegment)
-	// if err != nil {
-	// 	return fmt.Errorf("could not prune closed segments: %w", err)
-	// }
-
-	// err = compactedSegment.changeSuffix(".comp", closedSegmentSuffix)
-	// if err != nil {
-	// 	return fmt.Errorf("could not rename compacted segment: %w", err)
-	// }
-
-	// s.segmentMutex.Lock()
-	// s.closedSegmentStack = resultingSegments
-	// s.segmentMutex.Unlock()
-
-	// for _, s := range segments[1:] {
-	// 	s.clearFile()
-	// }
-
-	// return nil
-}
-
-func (c *NrOfFilesCompacter) findFilesToCompact() ([]string, error) {
-	filepathsToCompact := []string{}
-	files, err := listFilesWithSuffix(c.basepath, c.fileSuffix, false)
-	if err != nil {
-		return nil, fmt.Errorf("could not list sstables, %w", err)
+	for key, val := range data {
+		r := record.NewValue(key, val)
+		_, err := r.Write(target)
+		if err != nil {
+			return fmt.Errorf("compacter: could not write to target: %w", err)
+		}
 	}
 
-	if len(files) >= 2 {
-		filepathsToCompact = append(filepathsToCompact, files[0].filepath)
-		filepathsToCompact = append(filepathsToCompact, files[1].filepath)
-	}
-
-	return filepathsToCompact, nil
+	return nil
 }

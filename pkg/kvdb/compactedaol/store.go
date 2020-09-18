@@ -12,12 +12,13 @@ import (
 )
 
 const (
-	defaultMaxRecordSize  = 1024 * 1024 //1Mb
-	defaultAsync          = false
-	defaultSegmentMaxSize = 4096 * 1024 //4Mb
-	closedSegmentSuffix   = ".cseg"
-	openSegmentSuffix     = ".oseg"
-	compactionSuffix      = ".comp"
+	defaultMaxRecordSize       = 1024 * 1024 //1Mb
+	defaultAsync               = false
+	defaultSegmentMaxSize      = 4096 * 1024 //4Mb
+	defaultCompactionThreshold = 60 * 1024   // 10 Mb
+	closedSegmentSuffix        = ".cseg"
+	openSegmentSuffix          = ".oseg"
+	compactionSuffix           = ".comp"
 )
 
 var voidLogger = log.New(ioutil.Discard, "", log.LstdFlags)
@@ -36,13 +37,11 @@ type Store struct {
 	openSegment  *segment
 
 	// closedSegmentStack contains all immutable segments. The newest segment
-	// has position 0 and the oldest is at len(closedSegmentStack) - 1
-	closedSegmentStack []*segment
-
-	compacter *NrOfFilesCompacter
+	// has position 0 and the oldest at the last position
+	closedSegments *segmentStack
 }
 
-// Config contains the configuration properties for the simplelog store
+// Config contains the configuration properties for the compacted aol store
 type Config struct {
 	// Storage path
 	BasePath string
@@ -52,6 +51,9 @@ type Config struct {
 	Async *bool
 	// MaxSegmentSize defines the maximum size of the segments, must be >= MaxRecordSize
 	MaxSegmentSize *int
+	// CompactionThreshold defines the upper bound for how large a file can be and still
+	// be subject to compaction
+	CompactionThreshold *int
 
 	Logger *log.Logger
 }
@@ -59,11 +61,12 @@ type Config struct {
 // NewStore returns a new SimpleLogStore
 func NewStore(config Config) (*Store, error) {
 	var (
-		maxRecordSize  = defaultMaxRecordSize
-		maxSegmentSize = defaultSegmentMaxSize
-		storagePath    = config.BasePath
-		async          = defaultAsync
-		logger         = voidLogger
+		maxRecordSize       = defaultMaxRecordSize
+		maxSegmentSize      = defaultSegmentMaxSize
+		compactionThreshold = defaultCompactionThreshold
+		storagePath         = config.BasePath
+		async               = defaultAsync
+		logger              = voidLogger
 	)
 
 	if _, err := os.OpenFile(storagePath, os.O_CREATE, 0600); err != nil {
@@ -86,6 +89,10 @@ func NewStore(config Config) (*Store, error) {
 		logger = config.Logger
 	}
 
+	if config.CompactionThreshold != nil {
+		compactionThreshold = *config.CompactionThreshold
+	}
+
 	openSegment, err := loadOpenSegment(storagePath, maxRecordSize, async, logger)
 	if err != nil {
 		return nil, err
@@ -97,19 +104,20 @@ func NewStore(config Config) (*Store, error) {
 	}
 
 	store := &Store{
-		storagePath:        storagePath,
-		maxRecordSize:      maxRecordSize,
-		maxSegmentSize:     int64(maxSegmentSize),
-		async:              async,
-		logger:             logger,
-		writeMutex:         &sync.Mutex{},
-		segmentMutex:       &sync.RWMutex{},
-		openSegment:        openSegment,
-		closedSegmentStack: closedSegments,
+		storagePath:    storagePath,
+		maxRecordSize:  maxRecordSize,
+		maxSegmentSize: int64(maxSegmentSize),
+		async:          async,
+		logger:         logger,
+		writeMutex:     &sync.Mutex{},
+		segmentMutex:   &sync.RWMutex{},
+		openSegment:    openSegment,
+		closedSegments: closedSegments,
 	}
 
-	compacter := NewNrOfFilesCompacter(storagePath, closedSegmentSuffix, logger, 3, maxRecordSize, store.onCompactionDone)
-	store.compacter = compacter
+	compacter := newCompacter(store.onCompactionDone, compactionThreshold, storagePath, maxRecordSize, logger)
+	compacter.run()
+
 	return store, nil
 }
 
@@ -129,19 +137,19 @@ func loadOpenSegment(storagePath string, maxRecordSize int, async bool, log *log
 	}
 }
 
-func loadClosedSegments(storagePath string, maxRecordSize int, async bool, log *log.Logger) ([]*segment, error) {
+func loadClosedSegments(storagePath string, maxRecordSize int, async bool, log *log.Logger) (*segmentStack, error) {
 	fis, err := listFilesWithSuffix(storagePath, closedSegmentSuffix, true)
 	if err != nil {
 		return nil, fmt.Errorf("could not list closed segment files: %w", err)
 	}
 
-	closedSegments := []*segment{}
+	closedSegments := newSegmentStack()
 	for _, fi := range fis {
 		s, err := fromFile(fi.filepath, maxRecordSize, async, log)
 		if err != nil {
 			return nil, fmt.Errorf("could not load closed segment: %s, %w", fi.filepath, err)
 		}
-		closedSegments = append(closedSegments, s)
+		closedSegments.push(s)
 	}
 
 	return closedSegments, nil
@@ -229,18 +237,18 @@ func (s *Store) IsBadRequestError(err error) bool {
 	return kvdb.IsBadRequestError(err)
 }
 
-func (s *Store) onCompactionDone(targetFilePath string, compactedFilePaths ...string) error {
-	newSegment, err := fromFile(targetFilePath, s.maxRecordSize, s.async, s.logger)
+func (s *Store) onCompactionDone(targetFile string, compactedFiles []string) error {
+	newSegment, err := fromFile(targetFile, s.maxRecordSize, s.async, s.logger)
 	if err != nil {
 		return fmt.Errorf("could not create segment of compaction target: %w", err)
 	}
 
-	resultingSegments, err := pruneSegments(s.closedSegmentStack, newSegment, compactedFilePaths...)
+	resultingSegments, err := pruneSegments(s.closedSegmentStack, newSegment, compactedFiles...)
 	if err != nil {
 		return fmt.Errorf("could not prune closed segments: %w", err)
 	}
 
-	err = newSegment.changeSuffix(".tmp", closedSegmentSuffix)
+	err = newSegment.changeSuffix(compactionSuffix, closedSegmentSuffix)
 	if err != nil {
 		return fmt.Errorf("could not rename compacted segment: %w", err)
 	}
@@ -249,70 +257,22 @@ func (s *Store) onCompactionDone(targetFilePath string, compactedFilePaths ...st
 	s.closedSegmentStack = resultingSegments
 	s.segmentMutex.Unlock()
 
-	for _, s := range compactedFilePaths[1:] {
+	for _, s := range compactedFiles[1:] {
 		os.Remove(s)
 	}
 
 	return nil
 }
 
-// // doCompaction takes a set of consecutive segments from the closedSegmentStack
-// // and performs a compaction.
-// func (s *Store) doCompaction(segments []*segment) error {
-// 	s.logger.Printf("compacting: %d segments", len(segments))
-// 	var sources = []io.Reader{}
+func contains(arr []string, elem string) bool {
+	for i := range arr {
+		if arr[i] == elem {
+			return true
+		}
+	}
 
-// 	for _, segment := range segments {
-// 		file, err := os.Open(segment.storagePath)
-
-// 		if err != nil {
-// 			return fmt.Errorf("could not open file for compaction: %w", err)
-// 		}
-
-// 		defer func() {
-// 			file.Close()
-// 		}()
-
-// 		sources = append(sources, file)
-// 	}
-
-// 	inflightPath := strings.ReplaceAll(segments[0].storagePath, closedSegmentSuffix, compactionSuffix)
-// 	target, err := os.OpenFile(inflightPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
-// 	if err != nil {
-// 		return fmt.Errorf("could not create compaction target: %w", err)
-// 	}
-// 	defer target.Close()
-
-// 	err = record.Merge(target, s.maxRecordSize, sources...)
-// 	if err != nil {
-// 		return err
-// 	}
-
-// 	compactedSegment, err := fromFile(inflightPath, s.maxRecordSize, s.async, s.logger)
-// 	if err != nil {
-// 		return fmt.Errorf("could not create segment of compaction target: %w", err)
-// 	}
-
-// 	resultingSegments, err := pruneSegments(s.closedSegmentStack, segments, compactedSegment)
-// 	if err != nil {
-// 		return fmt.Errorf("could not prune closed segments: %w", err)
-// 	}
-
-// 	err = compactedSegment.changeSuffix(".comp", closedSegmentSuffix)
-// 	if err != nil {
-// 		return fmt.Errorf("could not rename compacted segment: %w", err)
-// 	}
-
-// 	s.segmentMutex.Lock()
-// 	s.closedSegmentStack = resultingSegments
-// 	s.segmentMutex.Unlock()
-
-// 	for _, s := range segments[1:] {
-// 		s.clearFile()
-// 	}
-
-// 	return nil
-// }
+	return false
+}
 
 // pruneSegments replaces the elements in segmentSet that also exists in
 // toRemove with toAdd. It requires the elements in toRemove to be consecutive
@@ -322,30 +282,43 @@ func (s *Store) onCompactionDone(targetFilePath string, compactedFilePaths ...st
 // result = pruneSegments(segmentSet, toRemove, toAdd)
 // fmt.Println(result) = {4, 5, 1}
 func pruneSegments(segmentStack []*segment, newSegment *segment, compactedFiles ...string) ([]*segment, error) {
-	resultingSegments := []*segment{}
+	// resultingSegments := []*segment{}
 
 	if compactedFiles == nil || len(compactedFiles) == 0 {
 		return nil, fmt.Errorf("no elements given in toRemove")
 	}
 
-	inRemoveStack := false
-	hasAdded := false
+	var firstItem, lastItem int = 0, 0
 	for i := range segmentStack {
-		for j := range compactedFiles {
-			if segmentStack[i].storagePath == compactedFiles[j] {
-				inRemoveStack = true
-				break
-			}
-			inRemoveStack = false
+		if segmentStack[i].storagePath == compactedFiles[0] {
+			firstItem = i
 		}
 
-		if !inRemoveStack {
-			resultingSegments = append(resultingSegments, segmentStack[i])
-		} else if !hasAdded {
-			resultingSegments = append(resultingSegments, newSegment)
-			hasAdded = true
+		if segmentStack[i].storagePath == compactedFiles[len(compactedFiles)-1] {
+			lastItem = i
 		}
 	}
 
-	return resultingSegments, nil
+	return append(segmentStack[:firstItem], append([]*segment{newSegment}, segmentStack[:lastItem+1]...)...), nil
+
+	// inRemoveStack := false
+	// hasAdded := false
+	// for i := range segmentStack {
+	// 	for j := range compactedFiles {
+	// 		if segmentStack[i].storagePath == compactedFiles[j] {
+	// 			inRemoveStack = true
+	// 			break
+	// 		}
+	// 		inRemoveStack = false
+	// 	}
+
+	// 	if !inRemoveStack {
+	// 		resultingSegments = append(resultingSegments, segmentStack[i])
+	// 	} else if !hasAdded {
+	// 		resultingSegments = append(resultingSegments, newSegment)
+	// 		hasAdded = true
+	// 	}
+	// }
+
+	// return resultingSegments, nil
 }

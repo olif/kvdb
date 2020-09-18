@@ -1,45 +1,39 @@
 package compactedaol
 
-import (
-	"io/ioutil"
-	"testing"
+// func TestDoCompaction(t *testing.T) {
+// 	testPath, err := ioutil.TempDir("./", "test")
+// 	if err != nil {
+// 		t.Fatal(err)
+// 	}
 
-	"github.com/stretchr/testify/require"
-)
+// 	defer (func() {
+// 		// os.RemoveAll(testPath)
+// 	})()
 
-func TestDoCompaction(t *testing.T) {
-	testPath, err := ioutil.TempDir("./", "test")
-	if err != nil {
-		t.Fatal(err)
-	}
+// 	const (
+// 		testKey   = "testkey"
+// 		testValue = "testValue"
+// 	)
 
-	defer (func() {
-		// os.RemoveAll(testPath)
-	})()
+// 	store, err := NewStore(Config{
+// 		BasePath: testPath,
+// 	})
+// 	require.NoError(t, err)
 
-	const (
-		testKey   = "testkey"
-		testValue = "testValue"
-	)
+// 	store.Put("key1", []byte("value1"))
+// 	store.rotateOpenSegment()
+// 	store.Put("key2", []byte("value2"))
+// 	store.rotateOpenSegment()
+// 	store.Put("key3", []byte("value3"))
+// 	store.Put("key1", []byte("key1-3"))
+// 	store.rotateOpenSegment()
+// 	store.Put("key4", []byte("value4"))
 
-	store, err := NewStore(Config{
-		BasePath: testPath,
-	})
-	require.NoError(t, err)
+// 	compacter := NewCompacter(testPath, closedSegmentSuffix,
+// 		voidLogger, 3, 100000, func(targetFile string, compactedFiles ...string) error {
+// 			return nil
+// 		})
 
-	store.Put("key1", []byte("value1"))
-	store.rotateOpenSegment()
-	store.Put("key2", []byte("value2"))
-	store.rotateOpenSegment()
-	store.Put("key3", []byte("value3"))
-	store.rotateOpenSegment()
-	store.Put("key4", []byte("value4"))
+// 	compacter.doCompaction()
 
-	compacter := NewNrOfFilesCompacter(testPath, closedSegmentSuffix,
-		voidLogger, 3, 100000, func(targetFile string, compactedFiles ...string) error {
-			return nil
-		})
-
-	compacter.doCompaction()
-
-}
+// }

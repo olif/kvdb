@@ -14,6 +14,54 @@ import (
 	"github.com/olif/kvdb/pkg/kvdb/record"
 )
 
+type index struct {
+	mutex  sync.RWMutex
+	table  map[string]int64
+	cursor int64
+}
+
+func (i *index) get(key string) (int64, bool) {
+	i.mutex.RLock()
+	defer i.mutex.RUnlock()
+	val, ok := i.table[key]
+	return val, ok
+}
+
+func (i *index) put(key string, written int64) {
+	i.mutex.Lock()
+	defer i.mutex.Unlock()
+	i.table[key] = i.cursor
+	i.cursor += written
+}
+
+type segmentStack struct {
+	segments []*segment
+	mutex    sync.RWMutex
+}
+
+func newSegmentStack() *segmentStack {
+	segments := make([]*segment, 3, 100)
+	return &segmentStack{
+		segments: segments,
+		mutex:    sync.RWMutex{},
+	}
+}
+
+func (s *segmentStack) push(segment *segment) {
+	s.mutex.Lock()
+	s.segments = append(s.segments, segment)
+	s.mutex.Unlock()
+}
+
+func (s *segmentStack) toSlice() []*segment {
+	s.mutex.RLock()
+	segments := make([]*segment, len(s.segments), len(s.segments))
+	copy(segments, s.segments)
+	s.mutex.RUnlock()
+	return segments
+}
+
+// not safe for concurrent use, must be handled by consumer
 type segment struct {
 	storagePath   string
 	maxRecordSize int
@@ -25,13 +73,6 @@ type segment struct {
 	writeMutex sync.Mutex
 }
 
-type index struct {
-	mutex  sync.RWMutex
-	table  map[string]int64
-	cursor int64
-}
-
-// not safe for concurrent use, must be handled by consumer
 func newSegment(baseDir string, maxRecordSize int, async bool, logger *log.Logger) *segment {
 	filename := genFileName(openSegmentSuffix)
 	filePath := path.Join(baseDir, filename)
@@ -78,24 +119,6 @@ func fromFile(filePath string, maxRecordSize int, async bool, logger *log.Logger
 		index:       &idx,
 		writeMutex:  sync.Mutex{},
 	}, nil
-}
-
-func genFileName(suffix string) string {
-	return fmt.Sprintf("%d%s", time.Now().UTC().UnixNano(), suffix)
-}
-
-func (i *index) get(key string) (int64, bool) {
-	i.mutex.RLock()
-	defer i.mutex.RUnlock()
-	val, ok := i.table[key]
-	return val, ok
-}
-
-func (i *index) put(key string, written int64) {
-	i.mutex.Lock()
-	defer i.mutex.Unlock()
-	i.table[key] = i.cursor
-	i.cursor += written
 }
 
 func (s *segment) get(key string) ([]byte, error) {
@@ -159,6 +182,10 @@ func (s *segment) append(record *record.Record) error {
 	return nil
 }
 
+func genFileName(suffix string) string {
+	return fmt.Sprintf("%d%s", time.Now().UTC().UnixNano(), suffix)
+}
+
 func (s *segment) changeSuffix(oldSuffix, newSuffix string) error {
 	newFilePath := strings.Replace(s.storagePath, oldSuffix, newSuffix, 1)
 
@@ -175,5 +202,10 @@ func (s *segment) size() int64 {
 }
 
 func (s *segment) clearFile() error {
+	s.index = &index{
+		cursor: 0,
+		table:  map[string]int64{},
+	}
+
 	return os.Remove(s.storagePath)
 }
