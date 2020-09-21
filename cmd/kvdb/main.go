@@ -39,11 +39,13 @@ func main() {
 	logger := log.New(os.Stdout, "", log.LstdFlags)
 
 	async := true
+	maxSegmentSize := 10 * 1024
 	db, err := compactedaol.NewStore(compactedaol.Config{
-		BasePath:      basePath,
-		MaxRecordSize: &maxRecordSize,
-		Logger:        logger,
-		Async:         &async,
+		BasePath:       basePath,
+		MaxRecordSize:  &maxRecordSize,
+		Logger:         logger,
+		Async:          &async,
+		MaxSegmentSize: &maxSegmentSize,
 	})
 	if err != nil {
 		logger.Fatal(err)
