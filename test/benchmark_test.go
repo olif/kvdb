@@ -169,7 +169,7 @@ type testCtx struct {
 }
 
 func Teardown(ctx testCtx) {
-	// os.RemoveAll(ctx.dbPath)
+	os.RemoveAll(ctx.dbPath)
 }
 
 type keyVal struct {

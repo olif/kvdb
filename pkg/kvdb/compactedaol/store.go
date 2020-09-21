@@ -6,17 +6,21 @@ import (
 	"log"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/olif/kvdb/pkg/kvdb"
 	"github.com/olif/kvdb/pkg/kvdb/record"
 )
 
 const (
-	defaultAsync          = false
-	defaultMaxRecordSize  = 1024 * 1024 //1Mb
-	defaultSegmentMaxSize = 4096 * 1024 //4Mb
-	closedSegmentSuffix   = ".cseg"
-	openSegmentSuffix     = ".oseg"
+	defaultAsync               = false
+	defaultMaxRecordSize       = 1024 * 1024                //1Mb
+	defaultSegmentMaxSize      = 4096 * 1024                //4Mb
+	defaultCompactionThreshold = defaultSegmentMaxSize * 10 // 40 Mb
+	defaultCompactionInterval  = 10 * time.Second
+	closedSegmentSuffix        = ".cseg"
+	openSegmentSuffix          = ".oseg"
+	compactionSuffix           = ".comp"
 )
 
 var voidLogger = log.New(ioutil.Discard, "", log.LstdFlags)
@@ -30,12 +34,15 @@ type Store struct {
 	logger         *log.Logger
 	async          bool
 
-	writeMutex  *sync.Mutex
-	openSegment *segment
+	writeMutex   *sync.Mutex
+	segmentMutex *sync.RWMutex
+	openSegment  *segment
 
 	// closedSegmentStack contains all immutable segments. The newest segment
 	// has position 0 and the oldest at the last position
 	closedSegments *segmentStack
+
+	compacter *compacter
 }
 
 // Config contains the configuration properties for the compacted aol store
@@ -49,6 +56,12 @@ type Config struct {
 	// MaxSegmentSize defines the maximum size of the segments, must be >=
 	// MaxRecordSize
 	MaxSegmentSize *int
+	// CompactionThreshold defines the upper bound for how large a file can be
+	// and still be subject to compaction
+	CompactionThreshold *int
+	// CompactionInterval defines the how often compaction should be run. Only
+	// one compaction at a time will be run.
+	CompactionInterval *time.Duration
 
 	Logger *log.Logger
 }
@@ -56,11 +69,13 @@ type Config struct {
 // NewStore returns a new SimpleLogStore
 func NewStore(config Config) (*Store, error) {
 	var (
-		maxRecordSize  = defaultMaxRecordSize
-		maxSegmentSize = defaultSegmentMaxSize
-		storagePath    = config.BasePath
-		async          = defaultAsync
-		logger         = voidLogger
+		maxRecordSize       = defaultMaxRecordSize
+		maxSegmentSize      = defaultSegmentMaxSize
+		compactionThreshold = defaultCompactionThreshold
+		compactionInterval  = defaultCompactionInterval
+		storagePath         = config.BasePath
+		async               = defaultAsync
+		logger              = voidLogger
 	)
 
 	if _, err := os.OpenFile(storagePath, os.O_CREATE, 0600); err != nil {
@@ -83,6 +98,14 @@ func NewStore(config Config) (*Store, error) {
 		logger = config.Logger
 	}
 
+	if config.CompactionThreshold != nil {
+		compactionThreshold = *config.CompactionThreshold
+	}
+
+	if config.CompactionInterval != nil {
+		compactionInterval = *config.CompactionInterval
+	}
+
 	openSegment, err := loadOpenSegment(storagePath, maxRecordSize, async, logger)
 	if err != nil {
 		return nil, err
@@ -100,9 +123,13 @@ func NewStore(config Config) (*Store, error) {
 		async:          async,
 		logger:         logger,
 		writeMutex:     &sync.Mutex{},
+		segmentMutex:   &sync.RWMutex{},
 		openSegment:    openSegment,
 		closedSegments: closedSegments,
 	}
+
+	store.compacter = newCompacter(store.onCompactionDone, compactionInterval, compactionThreshold, storagePath, maxRecordSize, logger)
+	store.compacter.run()
 
 	return store, nil
 }
@@ -144,14 +171,19 @@ func loadClosedSegments(storagePath string, maxRecordSize int, async bool, log *
 // Get returns the value associated with the key or a kvdb.NotFoundError if the
 // key was not found, or any other error encountered
 func (s *Store) Get(key string) ([]byte, error) {
+	s.segmentMutex.RLock()
 	record, err := s.openSegment.get(key)
+	s.segmentMutex.RUnlock()
+
 	if err == nil {
 		return resolveRecord(record)
 	} else if !kvdb.IsNotFoundError(err) {
 		return nil, err
 	}
 
-	for iter := s.closedSegments.iter(); iter.hasNext(); {
+	iter := s.closedSegments.iter()
+
+	for iter.hasNext() {
 		record, err := iter.next().get(key)
 		if err == nil {
 			return resolveRecord(record)
@@ -194,28 +226,29 @@ func (s *Store) append(record *record.Record) error {
 	defer s.writeMutex.Unlock()
 
 	if s.openSegment.size()+int64(record.Size()) > s.maxSegmentSize {
-		if err := s.rotateOpenSegment(); err != nil {
-			return fmt.Errorf("could not write value due to segment rotation failure: %w", err)
-		}
+		s.rotateOpenSegment()
 	}
 
 	return s.openSegment.append(record)
 }
 
-func (s *Store) rotateOpenSegment() error {
+func (s *Store) rotateOpenSegment() {
+	s.segmentMutex.Lock()
+	defer s.segmentMutex.Unlock()
 	newOpenSegment := newSegment(s.storagePath, s.maxRecordSize, s.async, s.logger)
-	if err := s.openSegment.changeSuffix(openSegmentSuffix, closedSegmentSuffix); err != nil {
-		return fmt.Errorf("could not change open segment suffix: %w", err)
+	err := s.openSegment.changeSuffix(openSegmentSuffix, closedSegmentSuffix)
+	if err != nil {
+		panic(err)
 	}
 
 	s.closedSegments.push(s.openSegment)
 	s.openSegment = newOpenSegment
-	return nil
 }
 
 // Close closes the store
 func (s *Store) Close() error {
-	s.logger.Print("Closing database")
+	s.logger.Println("Closing database")
+	s.compacter.stop()
 	return nil
 }
 
@@ -229,4 +262,39 @@ func (s *Store) IsNotFoundError(err error) bool {
 // is of type BadRequestError
 func (s *Store) IsBadRequestError(err error) bool {
 	return kvdb.IsBadRequestError(err)
+}
+
+func (s *Store) onCompactionDone(targetFile string, compactedFiles []string) error {
+	newSegment, err := fromFile(targetFile, s.maxRecordSize, s.async, s.logger)
+	if err != nil {
+		return fmt.Errorf("could not create segment of compaction target: %w", err)
+	}
+
+	s.segmentMutex.Lock()
+	defer s.segmentMutex.Unlock()
+
+	err = s.closedSegments.replace(func(segment *segment) bool {
+		return segment.storagePath == compactedFiles[0]
+	}, newSegment)
+
+	if err != nil {
+		return fmt.Errorf("could not replace with compacted segment: %w", err)
+	}
+
+	filesToRemove := compactedFiles[1:]
+	for i := range filesToRemove {
+		err = s.closedSegments.remove(func(segment *segment) bool {
+			return filesToRemove[i] == segment.storagePath
+		})
+
+		if err != nil {
+			return fmt.Errorf("could not remove compacted segment: %w", err)
+		}
+	}
+
+	if err = newSegment.changeSuffix(compactionSuffix, closedSegmentSuffix); err != nil {
+		return fmt.Errorf("could not rename compacted segment: %w", err)
+	}
+
+	return nil
 }

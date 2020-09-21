@@ -17,7 +17,7 @@ import (
 type index struct {
 	mutex  sync.RWMutex
 	table  map[string]int64
-	offset int64
+	cursor int64
 }
 
 func (i *index) get(key string) (int64, bool) {
@@ -30,8 +30,8 @@ func (i *index) get(key string) (int64, bool) {
 func (i *index) put(key string, written int64) {
 	i.mutex.Lock()
 	defer i.mutex.Unlock()
-	i.table[key] = i.offset
-	i.offset += written
+	i.table[key] = i.cursor
+	i.cursor += written
 }
 
 type segment struct {
@@ -54,8 +54,9 @@ func newSegment(baseDir string, maxRecordSize int, async bool, logger *log.Logge
 		logger:      logger,
 		async:       async,
 		index: &index{
-			offset: 0,
+			cursor: 0,
 			table:  map[string]int64{},
+			mutex:  sync.RWMutex{},
 		},
 		mutex: sync.RWMutex{},
 	}
@@ -63,7 +64,7 @@ func newSegment(baseDir string, maxRecordSize int, async bool, logger *log.Logge
 
 func fromFile(filePath string, maxRecordSize int, async bool, logger *log.Logger) (*segment, error) {
 	idx := index{
-		offset: 0,
+		cursor: 0,
 		table:  map[string]int64{},
 	}
 
@@ -95,7 +96,9 @@ func fromFile(filePath string, maxRecordSize int, async bool, logger *log.Logger
 }
 
 func (s *segment) get(key string) (*record.Record, error) {
+	s.mutex.RLock()
 	offset, ok := s.index.get(key)
+	s.mutex.RUnlock()
 	if !ok {
 		return nil, kvdb.NewNotFoundError(key)
 	}
@@ -173,14 +176,14 @@ func (s *segment) size() int64 {
 	s.index.mutex.RLock()
 	defer s.index.mutex.RUnlock()
 
-	return s.index.offset
+	return s.index.cursor
 }
 
 func (s *segment) clearFile() error {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 	s.index.table = map[string]int64{}
-	s.index.offset = 0
+	s.index.cursor = 0
 	return os.Remove(s.storagePath)
 }
 
@@ -210,6 +213,49 @@ func (s *segmentStack) push(seg *segment) {
 	s.mutex.Lock()
 	s.segments = append([]*segment{seg}, s.segments...)
 	s.mutex.Unlock()
+}
+
+func (s *segmentStack) remove(predicate func(segment *segment) bool) error {
+	rem := []*segment{}
+
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
+	for i := range s.segments {
+		if predicate(s.segments[i]) {
+			if err := s.segments[i].clearFile(); err != nil {
+				return fmt.Errorf("could not remove segment file: %s, due to: %w",
+					s.segments[i].storagePath, err)
+			}
+		} else {
+			rem = append(rem, s.segments[i])
+		}
+	}
+	s.segments = rem
+
+	return nil
+}
+
+func (s *segmentStack) replace(predicate func(segment *segment) bool, seg *segment) error {
+	rem := []*segment{}
+
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
+	for i := range s.segments {
+		if predicate(s.segments[i]) {
+			if err := s.segments[i].clearFile(); err != nil {
+				return fmt.Errorf("could not remove segment file: %s, due to: %w",
+					s.segments[i].storagePath, err)
+			}
+			rem = append(rem, seg)
+		} else {
+			rem = append(rem, s.segments[i])
+		}
+	}
+	s.segments = rem
+
+	return nil
 }
 
 type segmentStackIter struct {
