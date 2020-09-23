@@ -56,7 +56,7 @@ func TestLoad(t *testing.T) {
 	maxSegmentSize := 20 * 1024
 	async := true
 	compactionThreshold := 4 * maxSegmentSize
-	compactionInterval := 1 * time.Second
+	compactionInterval := 200 * time.Millisecond
 
 	store, err := compactedaol.NewStore(compactedaol.Config{
 		Async:               &async,
@@ -79,26 +79,26 @@ func run(t *testing.T, store kvdb.Store) {
 	wg := sync.WaitGroup{}
 	for i := 0; i < writers; i++ {
 		wg.Add(1)
-		go func(wi int, gr *sync.WaitGroup) {
-			writer(t, store)
+		go func(tst *testing.T, wi int, gr *sync.WaitGroup) {
+			writer(tst, store)
 			gr.Done()
-		}(i, &wg)
+		}(t, i, &wg)
 	}
 
 	for i := 0; i < readers; i++ {
 		wg.Add(1)
-		go func(ri int, gr *sync.WaitGroup) {
-			reader(t, store)
+		go func(tst *testing.T, ri int, gr *sync.WaitGroup) {
+			reader(tst, store)
 			gr.Done()
-		}(i, &wg)
+		}(t, i, &wg)
 	}
 
 	for i := 0; i < removers; i++ {
 		wg.Add(1)
-		go func(ri int, gr *sync.WaitGroup) {
-			remover(t, store)
+		go func(tst *testing.T, ri int, gr *sync.WaitGroup) {
+			remover(tst, store)
 			gr.Done()
-		}(i, &wg)
+		}(t, i, &wg)
 	}
 
 	wg.Wait()

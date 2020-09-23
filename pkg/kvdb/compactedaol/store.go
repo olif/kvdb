@@ -40,8 +40,9 @@ type Store struct {
 	// has position 0 and the oldest at the last position
 	closedSegments *segmentStack
 
-	openSegmentMutex sync.RWMutex
-	writeMutex       sync.Mutex
+	openSegmentMutex   sync.RWMutex
+	closedSegmentMutex sync.RWMutex
+	writeMutex         sync.Mutex
 
 	compacter *compacter
 }
@@ -180,6 +181,8 @@ func (s *Store) Get(key string) ([]byte, error) {
 		return nil, err
 	}
 
+	s.closedSegmentMutex.RLock()
+	defer s.closedSegmentMutex.RUnlock()
 	iter := s.closedSegments.iter()
 
 	for iter.hasNext() {
@@ -268,6 +271,8 @@ func (s *Store) IsBadRequestError(err error) bool {
 }
 
 func (s *Store) onCompactionDone(targetFile string, compactedFiles []string) error {
+	s.closedSegmentMutex.Lock()
+	defer s.closedSegmentMutex.Unlock()
 	newSegment, err := fromFile(targetFile, s.maxRecordSize, s.async, s.logger)
 	if err != nil {
 		return fmt.Errorf("could not create segment of compaction target: %w", err)
