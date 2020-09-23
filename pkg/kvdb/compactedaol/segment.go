@@ -16,21 +16,34 @@ import (
 
 type index struct {
 	table  map[string]int64
+	mutex  sync.RWMutex
 	cursor int64
 }
 
 func (i *index) get(key string) (int64, bool) {
+	i.mutex.RLock()
+	defer i.mutex.RUnlock()
 	val, ok := i.table[key]
 	return val, ok
 }
 
+func (i *index) getCursor() int64 {
+	i.mutex.RLock()
+	defer i.mutex.RUnlock()
+	return i.cursor
+}
+
 func (i *index) put(key string, written int64) {
+	i.mutex.Lock()
+	defer i.mutex.Unlock()
 	i.table[key] = i.cursor
 	i.cursor += written
 }
 
 type segment struct {
-	storagePath   string
+	storagePath      string
+	storagePathMutex sync.RWMutex
+
 	maxRecordSize int
 	logger        *log.Logger
 	async         bool
@@ -42,16 +55,21 @@ type segment struct {
 func newSegment(baseDir string, maxRecordSize int, async bool, logger *log.Logger) *segment {
 	filename := genFileName(openSegmentSuffix)
 	filePath := path.Join(baseDir, filename)
-
-	return &segment{
-		storagePath: filePath,
-		logger:      logger,
-		async:       async,
-		index: &index{
-			cursor: 0,
-			table:  map[string]int64{},
-		},
+	index := &index{
+		cursor: 0,
+		table:  map[string]int64{},
+		mutex:  sync.RWMutex{},
 	}
+
+	seg := segment{
+		storagePath:      filePath,
+		storagePathMutex: sync.RWMutex{},
+		logger:           logger,
+		async:            async,
+		index:            index,
+	}
+
+	return &seg
 }
 
 func fromFile(filePath string, maxRecordSize int, async bool, logger *log.Logger) (*segment, error) {
@@ -142,22 +160,30 @@ func (s *segment) append(record *record.Record) error {
 }
 
 func (s *segment) getFile(mode int) (*os.File, error) {
+	s.storagePathMutex.RLock()
+	defer s.storagePathMutex.RUnlock()
 	return os.OpenFile(s.storagePath, mode, 0600)
 }
 
 func (s *segment) changeSuffix(oldSuffix, newSuffix string) error {
-	newFilePath := strings.Replace(s.storagePath, oldSuffix, newSuffix, 1)
+	s.storagePathMutex.RLock()
 
+	newFilePath := strings.Replace(s.storagePath, oldSuffix, newSuffix, 1)
 	if err := os.Rename(s.storagePath, newFilePath); err != nil {
 		return err
 	}
 
+	s.storagePathMutex.RUnlock()
+
+	s.storagePathMutex.Lock()
+	defer s.storagePathMutex.Unlock()
 	s.storagePath = newFilePath
+
 	return nil
 }
 
 func (s *segment) size() int64 {
-	return s.index.cursor
+	return s.index.getCursor()
 }
 
 func (s *segment) clearFile() error {
@@ -175,11 +201,13 @@ func newSegmentStack() *segmentStack {
 	segments := make([]*segment, 0)
 	return &segmentStack{
 		segments: segments,
-		mutex:    sync.RWMutex{},
 	}
 }
 
 func (s *segmentStack) iter() *segmentStackIter {
+	s.mutex.RLock()
+	defer s.mutex.RUnlock()
+
 	return &segmentStackIter{
 		segments: s.segments,
 		pos:      -1,
@@ -187,6 +215,9 @@ func (s *segmentStack) iter() *segmentStackIter {
 }
 
 func (s *segmentStack) push(seg *segment) {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
 	s.segments = append([]*segment{seg}, s.segments...)
 }
 

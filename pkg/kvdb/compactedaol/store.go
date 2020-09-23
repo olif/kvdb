@@ -5,21 +5,18 @@ import (
 	"io/ioutil"
 	"log"
 	"os"
-	"time"
+	"sync"
 
 	"github.com/olif/kvdb/pkg/kvdb"
 	"github.com/olif/kvdb/pkg/kvdb/record"
 )
 
 const (
-	defaultAsync               = false
-	defaultMaxRecordSize       = 1024 * 1024                //1Mb
-	defaultSegmentMaxSize      = 4096 * 1024                //4Mb
-	defaultCompactionThreshold = defaultSegmentMaxSize * 10 // 40 Mb
-	defaultCompactionInterval  = 10 * time.Second
-	closedSegmentSuffix        = ".cseg"
-	openSegmentSuffix          = ".oseg"
-	compactionSuffix           = ".comp"
+	defaultAsync          = false
+	defaultMaxRecordSize  = 1024 * 1024 //1Mb
+	defaultSegmentMaxSize = 4096 * 1024 //4Mb
+	closedSegmentSuffix   = ".cseg"
+	openSegmentSuffix     = ".oseg"
 )
 
 var voidLogger = log.New(ioutil.Discard, "", log.LstdFlags)
@@ -38,6 +35,9 @@ type Store struct {
 	// closedSegmentStack contains all immutable segments. The newest segment
 	// has position 0 and the oldest at the last position
 	closedSegments *segmentStack
+
+	openSegmentMutex sync.RWMutex
+	writeMutex       sync.Mutex
 }
 
 // Config contains the configuration properties for the compacted aol store
@@ -145,7 +145,9 @@ func loadClosedSegments(storagePath string, maxRecordSize int, async bool, log *
 // Get returns the value associated with the key or a kvdb.NotFoundError if the
 // key was not found, or any other error encountered
 func (s *Store) Get(key string) ([]byte, error) {
+	s.openSegmentMutex.RLock()
 	record, err := s.openSegment.get(key)
+	s.openSegmentMutex.RUnlock()
 
 	if err == nil {
 		return resolveRecord(record)
@@ -194,6 +196,9 @@ func (s *Store) Delete(key string) error {
 }
 
 func (s *Store) append(record *record.Record) error {
+	s.writeMutex.Lock()
+	defer s.writeMutex.Unlock()
+
 	if s.openSegment.size()+int64(record.Size()) > s.maxSegmentSize {
 		s.rotateOpenSegment()
 	}
@@ -202,6 +207,9 @@ func (s *Store) append(record *record.Record) error {
 }
 
 func (s *Store) rotateOpenSegment() {
+	s.openSegmentMutex.Lock()
+	defer s.openSegmentMutex.Unlock()
+
 	newOpenSegment := newSegment(s.storagePath, s.maxRecordSize, s.async, s.logger)
 	err := s.openSegment.changeSuffix(openSegmentSuffix, closedSegmentSuffix)
 	if err != nil {
