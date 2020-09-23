@@ -187,6 +187,9 @@ func (s *segment) size() int64 {
 }
 
 func (s *segment) clearFile() error {
+	s.index.mutex.Lock()
+	defer s.index.mutex.Unlock()
+
 	s.index.table = map[string]int64{}
 	s.index.cursor = 0
 	return os.Remove(s.storagePath)
@@ -194,6 +197,9 @@ func (s *segment) clearFile() error {
 
 func (s *segmentStack) remove(predicate func(segment *segment) bool) error {
 	rem := []*segment{}
+
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
 
 	for i := range s.segments {
 		if predicate(s.segments[i]) {
@@ -213,6 +219,9 @@ func (s *segmentStack) remove(predicate func(segment *segment) bool) error {
 func (s *segmentStack) replace(predicate func(segment *segment) bool, seg *segment) error {
 	rem := []*segment{}
 
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
 	for i := range s.segments {
 		if predicate(s.segments[i]) {
 			if err := s.segments[i].clearFile(); err != nil {
@@ -224,6 +233,7 @@ func (s *segmentStack) replace(predicate func(segment *segment) bool, seg *segme
 			rem = append(rem, s.segments[i])
 		}
 	}
+
 	s.segments = rem
 
 	return nil
