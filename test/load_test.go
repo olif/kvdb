@@ -8,6 +8,7 @@ import (
 	"os"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/olif/kvdb/pkg/kvdb"
 	"github.com/olif/kvdb/pkg/kvdb/compactedaol"
@@ -54,13 +55,17 @@ func TestLoad(t *testing.T) {
 	maxRecordSize := 5 * 1024
 	maxSegmentSize := 20 * 1024
 	async := true
+	compactionThreshold := 4 * maxSegmentSize
+	compactionInterval := 1 * time.Second
 
 	store, err := compactedaol.NewStore(compactedaol.Config{
-		Async:          &async,
-		Logger:         logger,
-		BasePath:       dbPath,
-		MaxRecordSize:  &maxRecordSize,
-		MaxSegmentSize: &maxSegmentSize,
+		Async:               &async,
+		Logger:              logger,
+		BasePath:            dbPath,
+		MaxRecordSize:       &maxRecordSize,
+		MaxSegmentSize:      &maxSegmentSize,
+		CompactionThreshold: &compactionThreshold,
+		CompactionInterval:  &compactionInterval,
 	})
 
 	if err != nil {

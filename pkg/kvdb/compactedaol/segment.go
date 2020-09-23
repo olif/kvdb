@@ -192,6 +192,43 @@ func (s *segment) clearFile() error {
 	return os.Remove(s.storagePath)
 }
 
+func (s *segmentStack) remove(predicate func(segment *segment) bool) error {
+	rem := []*segment{}
+
+	for i := range s.segments {
+		if predicate(s.segments[i]) {
+			if err := s.segments[i].clearFile(); err != nil {
+				return fmt.Errorf("could not remove segment file: %s, due to: %w",
+					s.segments[i].storagePath, err)
+			}
+		} else {
+			rem = append(rem, s.segments[i])
+		}
+	}
+	s.segments = rem
+
+	return nil
+}
+
+func (s *segmentStack) replace(predicate func(segment *segment) bool, seg *segment) error {
+	rem := []*segment{}
+
+	for i := range s.segments {
+		if predicate(s.segments[i]) {
+			if err := s.segments[i].clearFile(); err != nil {
+				return fmt.Errorf("could not remove segment file: %s, due to: %w",
+					s.segments[i].storagePath, err)
+			}
+			rem = append(rem, seg)
+		} else {
+			rem = append(rem, s.segments[i])
+		}
+	}
+	s.segments = rem
+
+	return nil
+}
+
 type segmentStack struct {
 	segments []*segment
 	mutex    sync.RWMutex
