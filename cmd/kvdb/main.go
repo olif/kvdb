@@ -40,12 +40,17 @@ func main() {
 
 	async := true
 	maxSegmentSize := 10 * 1024
+	compactionThreshold := 4 * maxSegmentSize
+	compactionInterval := 1 * time.Second
+
 	db, err := compactedaol.NewStore(compactedaol.Config{
-		BasePath:       basePath,
-		MaxRecordSize:  &maxRecordSize,
-		Logger:         logger,
-		Async:          &async,
-		MaxSegmentSize: &maxSegmentSize,
+		BasePath:            basePath,
+		MaxRecordSize:       &maxRecordSize,
+		Logger:              logger,
+		Async:               &async,
+		MaxSegmentSize:      &maxSegmentSize,
+		CompactionThreshold: &compactionThreshold,
+		CompactionInterval:  &compactionInterval,
 	})
 	if err != nil {
 		logger.Fatal(err)
