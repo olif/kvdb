@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/olif/kvdb/pkg/kvdb"
 	"github.com/olif/kvdb/pkg/kvdb/aol"
@@ -34,9 +35,6 @@ func BenchmarkAolReadFrom1000Db(b *testing.B) {
 func BenchmarkAolReadFrom10000Db(b *testing.B) {
 	Read(b, getAolStore(b, true), 10000, 100, 1)
 }
-func BenchmarkAolRead10000Db100(b *testing.B) {
-	Read(b, getAolStore(b, true), 10000, 100, 1)
-}
 func BenchmarkAolWrite100Db100(b *testing.B) {
 	Write(b, getAolStore(b, true), 0, 100, 1)
 }
@@ -57,9 +55,6 @@ func BenchmarkIndexedAolReadFrom1000Db(b *testing.B) {
 func BenchmarkIndexedAolReadFrom10000Db(b *testing.B) {
 	Read(b, getIndexedAolStore(b, true), 10000, 100, 1)
 }
-func BenchmarkIndexedAolRead10000Db100(b *testing.B) {
-	Read(b, getIndexedAolStore(b, true), 10000, 100, 1)
-}
 func BenchmarkIndexedAolWrite100Db100(b *testing.B) {
 	Write(b, getIndexedAolStore(b, true), 0, 100, 1)
 }
@@ -78,9 +73,6 @@ func BenchmarkCompactedAolReadFrom1000Db(b *testing.B) {
 	Read(b, getCompactedAolStore(b, true), 1000, 100, 1)
 }
 func BenchmarkCompactedAolReadFrom10000Db(b *testing.B) {
-	Read(b, getCompactedAolStore(b, true), 10000, 100, 1)
-}
-func BenchmarkCompactedAolRead10000Db100(b *testing.B) {
 	Read(b, getCompactedAolStore(b, true), 10000, 100, 1)
 }
 func BenchmarkCompactedAolWrite100Db100(b *testing.B) {
@@ -110,12 +102,16 @@ func getCompactedAolStore(b *testing.B, async bool) testCtx {
 		b.Fatal(err)
 	}
 
-	maxSegmentSize := 1024 * 200 //200kB
+	maxSegmentSize := 1024 * 20 //200kB
+	compactionThreshold := 4 * maxSegmentSize
+	compactionInterval := 1 * time.Second
 	store, err := compactedaol.NewStore(compactedaol.Config{
-		BasePath:       dbPath,
-		MaxRecordSize:  &maxRecordSize,
-		MaxSegmentSize: &maxSegmentSize,
-		Async:          &async,
+		BasePath:            dbPath,
+		MaxRecordSize:       &maxRecordSize,
+		MaxSegmentSize:      &maxSegmentSize,
+		Async:               &async,
+		CompactionThreshold: &compactionThreshold,
+		CompactionInterval:  &compactionInterval,
 	})
 
 	if err != nil {
